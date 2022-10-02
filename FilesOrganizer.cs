@@ -1,5 +1,4 @@
 #if UNITY_EDITOR
-using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
@@ -20,26 +19,56 @@ public class FilesOrganizer : Editor
 
         var FullDestPath = "Assets/" + DestFolderName;
 
-        CreateFolder("Assets", DestFolderName);
+        if (!AssetDatabase.IsValidFolder(FullDestPath))
+        {
+            AssetDatabase.CreateFolder("Assets", DestFolderName);
+        }
 
-        CreateFolder(FullDestPath, "FBX");
-        CreateFolder(FullDestPath, "Mesh");
-        CreateFolder(FullDestPath, "Materials");
-        CreateFolder(FullDestPath, "Textures");
-        CreateFolder(FullDestPath, "VRChat"); CreateFolder(FullDestPath + "/VRChat", "Controllers"); CreateFolder(FullDestPath + "/VRChat", "Menus");
+        void WriteAssetsToPath(IEnumerable<string> items, string SubFolder)
+        {
+            if (!AssetDatabase.IsValidFolder($"{FullDestPath}/{SubFolder}"))
+            {
+                var dirs = SubFolder.Split('/');
+
+                var BuiltDir = $"{FullDestPath}";
+                foreach (var dir in dirs)
+                {
+                    if (string.IsNullOrEmpty(dir))
+                    {
+                        continue;
+                    }
+
+                    Debug.Log($"BuiltDir: {BuiltDir}");
+                    Debug.Log($"dir: {dir}");
+
+                    if (!AssetDatabase.IsValidFolder($"{BuiltDir}/{dir}"))
+                    {
+                        AssetDatabase.CreateFolder(BuiltDir, dir);
+                        Debug.Log($"Created Dir: {BuiltDir}/{dir}");
+                    }
+
+                    BuiltDir += $"/{dir}";
+                }
+            }
+
+            foreach (var path in items)
+            {
+                if (!path.Contains($"{FullDestPath}/{SubFolder}") && !path.Contains("unity_built"))
+                {
+                    var Message = AssetDatabase.MoveAsset(path, $"{FullDestPath}/{SubFolder}/{Path.GetFileName(path)}");
+
+                    if (!string.IsNullOrEmpty(Message))
+                    {
+                        EditorUtility.DisplayDialog("Error Moving Asset", $"{path} -> {FullDestPath}/{SubFolder}\r\n\r\n{Message}", "Ok");
+                    }
+                }
+            }
+        }
 
         #region Scene Organizing
         var ScenePath = SceneManager.GetActiveScene().path;
 
-        if (!ScenePath.Contains($"{FullDestPath}/"))
-        {
-            var Message = AssetDatabase.MoveAsset(ScenePath, $"{FullDestPath}/{Path.GetFileName(ScenePath)}");
-
-            if (!string.IsNullOrEmpty(Message))
-            {
-                EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-            }
-        }
+        WriteAssetsToPath(new [] { ScenePath }, "");
         #endregion
 
         #region Mesh Organizing
@@ -54,31 +83,8 @@ public class FilesOrganizer : Editor
         var AllFBXs = CombinedMeshes.Where(o => o.ToLower().Contains(".fbx"));
         var AllGenerics = CombinedMeshes.Where(o => !o.ToLower().Contains(".fbx"));
 
-        foreach (var path in AllFBXs)
-        {
-            if (!path.Contains($"{FullDestPath}/FBX/"))
-            {
-                var Message = AssetDatabase.MoveAsset(path, $"{FullDestPath}/FBX/{Path.GetFileName(path)}");
-
-                if (!string.IsNullOrEmpty(Message))
-                {
-                    EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-                }
-            }
-        }
-
-        foreach (var path in AllGenerics)
-        {
-            if (!path.Contains($"{FullDestPath}/Mesh/"))
-            {
-                var Message = AssetDatabase.MoveAsset(path, $"{FullDestPath}/Mesh/{Path.GetFileName(path)}");
-
-                if (!string.IsNullOrEmpty(Message))
-                {
-                    EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-                }
-            }
-        }
+        WriteAssetsToPath(AllFBXs, "FBX");
+        WriteAssetsToPath(AllGenerics, "Mesh");
         #endregion
 
         #region Material/Textures Organizing
@@ -93,31 +99,8 @@ public class FilesOrganizer : Editor
 
         var AllTextures = Selection.activeGameObject.GetComponentsInChildren<Renderer>(true).SelectMany(GetTextures).Select(AssetDatabase.GetAssetPath).Distinct().Where(o => !string.IsNullOrEmpty(o));
 
-        foreach (var path in AllMaterials)
-        {
-            if (!path.Contains($"{FullDestPath}/Materials/"))
-            {
-                var Message = AssetDatabase.MoveAsset(path, $"{FullDestPath}/Materials/{Path.GetFileName(path)}");
-
-                if (!string.IsNullOrEmpty(Message))
-                {
-                    EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-                }
-            }
-        }
-
-        foreach (var path in AllTextures)
-        {
-            if (!path.Contains($"{FullDestPath}/Textures/"))
-            {
-                var Message = AssetDatabase.MoveAsset(path, $"{FullDestPath}/Textures/{Path.GetFileName(path)}");
-
-                if (!string.IsNullOrEmpty(Message))
-                {
-                    EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-                }
-            }
-        }
+        WriteAssetsToPath(AllMaterials, "Materials");
+        WriteAssetsToPath(AllTextures, "Textures");
         #endregion
 
         #region VRChat Related Files Organizing
@@ -143,48 +126,27 @@ public class FilesOrganizer : Editor
 
         MenuPaths = MenuPaths.Where(o => !string.IsNullOrEmpty(o)).Distinct().ToList();
 
-        foreach (var path in MenuPaths)
-        {
-            if (!path.Contains($"{FullDestPath}/VRChat/Menus/"))
-            {
-                var Message = AssetDatabase.MoveAsset(path, $"{FullDestPath}/VRChat/Menus/{Path.GetFileName(path)}");
+        WriteAssetsToPath(MenuPaths, "VRChat/Menus");
 
-                if (!string.IsNullOrEmpty(Message))
-                {
-                    EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-                }
-            }
-        }
+        var ParamsPath = AssetDatabase.GetAssetPath(DescriptorObject.expressionParameters);
 
-        var ParamsPath = AssetDatabase.GetAssetPath(DescriptorObject?.expressionParameters);
+        var AllAnimatorControllers = DescriptorObject.baseAnimationLayers.Select(a => a.animatorController).Concat(DescriptorObject.specialAnimationLayers.Select(a => a.animatorController)).Where(o => o != null);
 
-        var AllAnimatorControllers = DescriptorObject?.baseAnimationLayers.Select(a => a.animatorController).Concat(DescriptorObject.specialAnimationLayers.Select(a => a.animatorController)).Select(AssetDatabase.GetAssetPath).Where(p => !string.IsNullOrEmpty(p));
+        var AllAnimClips = AllAnimatorControllers.SelectMany(o => o.animationClips);
 
-        if (AllAnimatorControllers != null)
-        {
-            foreach (var path in AllAnimatorControllers)
-            {
-                if (!path.Contains($"{FullDestPath}/VRChat/Menus/"))
-                {
-                    var Message = AssetDatabase.MoveAsset(path, $"{FullDestPath}/VRChat/Controllers/{Path.GetFileName(path)}");
+        WriteAssetsToPath(AllAnimClips.Select(AssetDatabase.GetAssetPath).Where(p => !string.IsNullOrEmpty(p)), "VRChat/Animations");
 
-                    if (!string.IsNullOrEmpty(Message))
-                    {
-                        EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-                    }
-                }
-            }
-        }
+        WriteAssetsToPath(AllAnimatorControllers.Select(AssetDatabase.GetAssetPath).Where(p => !string.IsNullOrEmpty(p)), "VRChat/Controllers");
 
-        if (!string.IsNullOrEmpty(ParamsPath) && !ParamsPath.Contains($"{FullDestPath}/VRChat/"))
-        {
-            var Message = AssetDatabase.MoveAsset(ParamsPath, $"{FullDestPath}/VRChat/{Path.GetFileName(ParamsPath)}");
+        WriteAssetsToPath(new [] { ParamsPath }, "VRChat");
+        #endregion
 
-            if (!string.IsNullOrEmpty(Message))
-            {
-                EditorUtility.DisplayDialog("Error Moving Asset", Message, "Ok");
-            }
-        }
+        #region Component Related Files Organizing
+
+        var AllAudioClips = Selection.activeGameObject.GetComponentsInChildren<AudioSource>(true).Select(o => o.clip);
+
+        WriteAssetsToPath(AllAudioClips.Select(AssetDatabase.GetAssetPath).Where(p => !string.IsNullOrEmpty(p)), "AudioClips");
+
         #endregion
 
         AssetDatabase.SaveAssets();
@@ -199,28 +161,6 @@ public class FilesOrganizer : Editor
                 yield return texture;
             }
         }
-    }
-
-    public static IEnumerable<T> Flatten<T, R>(IEnumerable<T> source, Func<T, R> recursion) where R : IEnumerable<T>
-    {
-        try
-        {
-            var result = source?.SelectMany(x => (x != null && recursion(x) != null && recursion(x).Any()) ? Flatten(recursion(x).Where(z => z != null), recursion) : null).Where(x => x != null);
-
-            return result;
-        }
-        catch
-        {
-
-        }
-
-        return null;
-    }
-
-    private static void CreateFolder(string ParentFolder, string NewFolder)
-    {
-        if (!AssetDatabase.IsValidFolder($"{ParentFolder}/{NewFolder}"))
-            AssetDatabase.CreateFolder(ParentFolder, NewFolder);
     }
 }
 #endif
