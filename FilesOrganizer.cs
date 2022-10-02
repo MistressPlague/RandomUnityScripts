@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -125,25 +125,21 @@ public class FilesOrganizer : Editor
 
         var MenuPaths = new List<string>();
 
-        MenuPaths.AddRange(Flatten(DescriptorObject?.expressionsMenu?.controls?
-                    .Where(o => o != null && o.type == VRCExpressionsMenu.Control.ControlType.SubMenu)
-                    .Select(p => p.subMenu),
-
-                a => a?.controls?
-                    .Where(o => o != null && o.type == VRCExpressionsMenu.Control.ControlType.SubMenu)
-                    .Select(p => p.subMenu))?
-
-            .Where(o => o != null).Select(AssetDatabase.GetAssetPath)
-            .Where(o => o != null) ?? Array.Empty<string>());
-
-        //I don't know how this dumb flatten trash works
-        var ToAdd = DescriptorObject?.expressionsMenu?.controls?.Where(o => o != null && o.type == VRCExpressionsMenu.Control.ControlType.SubMenu).Select(p => p.subMenu).Select(AssetDatabase.GetAssetPath);
-
-        if (ToAdd != null)
+        void AddAllSubMenus(VRCExpressionsMenu Menu)
         {
-            MenuPaths.AddRange(ToAdd);
+            MenuPaths.Add(AssetDatabase.GetAssetPath(Menu));
+
+            foreach (var control in Menu.controls)
+            {
+                if (control.type == VRCExpressionsMenu.Control.ControlType.SubMenu && control.subMenu != null)
+                {
+                    // Recursion
+                    AddAllSubMenus(control.subMenu);
+                }
+            }
         }
-        MenuPaths.Add(AssetDatabase.GetAssetPath(DescriptorObject?.expressionsMenu));
+
+        AddAllSubMenus(DescriptorObject.expressionsMenu);
 
         MenuPaths = MenuPaths.Where(o => !string.IsNullOrEmpty(o)).Distinct().ToList();
 
