@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
@@ -6,15 +6,51 @@ using UnityEngine;
 using VRC.Core;
 using VRC.SDK3.Avatars.Components;
 
+using static UnityEngine.EventSystems.EventTrigger;
+
+[CustomEditor(typeof(FBXUpdater))]
+public class FBXUpdaterInspector : Editor
+{
+    public override void OnInspectorGUI()
+    {
+        serializedObject.Update();
+
+        GUILayout.Label("");
+        ((FBXUpdater)target).UpdatingTo = EditorGUILayout.ObjectField("Parent Object Of New Ver:", ((FBXUpdater)target).UpdatingTo, typeof(GameObject), true) as GameObject;
+
+        GUILayout.Label("Note: This Is To Be Added To The OLD PARENT GameObject Of Your Model.");
+
+        if (GUILayout.Button("Update To New FBX!"))
+        {
+            ((FBXUpdater)target).UpdateFBX();
+        }
+    }
+}
+
 [DisallowMultipleComponent]
-#if VRC_SDK_VRCSDK3
 [RequireComponent(typeof(VRCAvatarDescriptor))]
-#elif VRC_SDK_VRCSDK2
-    [RequireComponent(typeof(VRC_AvatarDescriptor))]
-#endif
 public class FBXUpdater : MonoBehaviour
 {
     public GameObject UpdatingTo;
+
+    private static string GetPath(Transform obj, bool MakeRelative = false)
+    {
+        var text = "/" + obj.name;
+        while (obj.parent != null)
+        {
+            obj = obj.parent.transform;
+            text = "/" + obj.name + text;
+        }
+
+        text = text.Substring(1); // Remove / At Start?
+
+        if (MakeRelative)
+        {
+            text = text.Substring(text.IndexOf("/") + 1);
+        }
+
+        return text;
+    }
 
     public void UpdateFBX()
     {
@@ -36,40 +72,42 @@ public class FBXUpdater : MonoBehaviour
 
         #region Update SkinnedMeshRenderers' Materials
 
-        var skinnedMeshRenderersOld = ToComponentList<SkinnedMeshRenderer>(AllComponentsOld).Select(Old => (Old, ToComponentList<SkinnedMeshRenderer>(AllComponentsNew).FirstOrDefault(p => p.sharedMesh.name == Old.sharedMesh.name && !AssetDatabase.GetAssetPath(p).Contains("unity default resources")))).Where(o => o.Old != null && o.Item2 != null).ToList();
+        var skinnedMeshRenderersOld = ToComponentList<SkinnedMeshRenderer>(AllComponentsOld).Select(Old => (Old, ToComponentList<SkinnedMeshRenderer>(AllComponentsNew).FirstOrDefault(p => (p.sharedMesh.name == Old.sharedMesh.name && !AssetDatabase.GetAssetPath(p).Contains("unity default resources")) || p.name == Old.name))).Where(o => o.Old != null && o.Item2 != null).ToList();
 
         Debug.Log($"Got {skinnedMeshRenderersOld.Count} SkinnedMeshRenderers With Matching Mesh Names & SubMesh Counts!");
-
+        
         for (var index = 0; index < skinnedMeshRenderersOld.Count; index++)
         {
             var entry = skinnedMeshRenderersOld[index];
 
-            if ((entry.Item2.sharedMaterials.Length == 1 && entry.Old.sharedMaterials.Length == 1) || (entry.Item2.sharedMaterials.Length == 1 && entry.Old.sharedMaterials.Length == 2 && entry.Old.sharedMaterials.GroupBy(x => x.name).All(g => g.Count() == 1))) // No Changes
+            // Copy Shape Key Weights
+            for (var i = 0; i < entry.Old.sharedMesh.blendShapeCount; i++)
             {
-                //Debug.Log($"Updating Single Material: {entry.Item2.sharedMaterial.name.Replace(" (Instance)", "")} On Mesh Object: {entry.Item2.name} To: {entry.Old.sharedMaterial.name.Replace(" (Instance)", "")}!");
+                var NameForID = entry.Old.sharedMesh.GetBlendShapeName(i);
 
-                entry.Item2.sharedMaterial = entry.Old.sharedMaterial;
-            }
-            else
-            {
-                var MatchingMaterialsOnEntry = entry.Old.sharedMaterials.Select(Old => (Old, entry.Item2.sharedMaterials.FirstOrDefault(p => p.name.Replace(" (Instance)", "") == Old.name.Replace(" (Instance)", "")))).Where(o => o.Old != null && o.Item2 != null).ToList();
+                var IDOfNew = -1;
 
-                var NewMats = new List<Material>(entry.Item2.sharedMaterials);
-
-                for (var i = 0; i < MatchingMaterialsOnEntry.Count; i++)
+                for (var i2 = 0; i2 < entry.Item2.sharedMesh.blendShapeCount; i2++)
                 {
-                    var matching = MatchingMaterialsOnEntry[i];
+                    var NewNameForID = entry.Item2.sharedMesh.GetBlendShapeName(i2);
 
-                    //Debug.Log($"Updating Material: {matching.Item2.name.Replace(" (Instance)", "")} On Mesh Object: {entry.Item2.name} To: {matching.Old.name.Replace(" (Instance)", "")}!");
-
-                    var Index = NewMats.IndexOf(NewMats.First(o => o.name.Replace(" (Instance)", "") == matching.Old.name.Replace(" (Instance)", "")));
-
-                    NewMats[Index] = matching.Old;
+                    if (NewNameForID == NameForID)
+                    {
+                        IDOfNew = i2;
+                        break;
+                    }
                 }
 
-                entry.Item2.sharedMaterials = NewMats.ToArray();
+                if (IDOfNew != -1)
+                {
+                    entry.Item2.SetBlendShapeWeight(IDOfNew, entry.Old.GetBlendShapeWeight(i));
+                }
             }
 
+            var AnchorPath = GetPath(entry.Old.probeAnchor, true);
+
+            entry.Item2.probeAnchor = UpdatingTo.transform.Find(AnchorPath);
+            
             entry.Item2.gameObject.SetActive(entry.Old.gameObject.activeSelf);
             entry.Item2.gameObject.name = entry.Old.gameObject.name;
 
@@ -79,6 +117,7 @@ public class FBXUpdater : MonoBehaviour
                 var PathToCreate = "";
 
                 var CurrentObject = entry.Old.transform.parent;
+
                 while (CurrentObject != entry.Old.transform.root) // Create Path String - Loop
                 {
                     if (CurrentObject == null || string.IsNullOrWhiteSpace(CurrentObject.name))
@@ -92,7 +131,7 @@ public class FBXUpdater : MonoBehaviour
                     }
                     else
                     {
-                        PathToCreate += CurrentObject.name + "/" + PathToCreate;
+                        PathToCreate = CurrentObject.name + "/" + PathToCreate;
                     }
 
                     CurrentObject = CurrentObject.parent;
@@ -103,26 +142,21 @@ public class FBXUpdater : MonoBehaviour
                 if (FindOrNull(UpdatingTo.transform, PathToCreate) == null)
                 {
                     GameObject CurrentDupedObj = null;
-                    foreach (var ObjName in PathToCreate.Split('/'))
+                    foreach (var ObjName in PathToCreate.Split('/')) // Left to right, begins at rootmost
                     {
                         if (string.IsNullOrWhiteSpace(ObjName))
                         {
                             break;
                         }
 
-                        var NewDupe = new GameObject(ObjName);
+                        var NewDupe = UpdatingTo.transform.Find(ObjName)?.gameObject ?? new GameObject(ObjName);
 
                         Debug.Log($"[ForEach] Created Object {NewDupe.name}! - [D]: Path: {PathToCreate}");
 
                         if (CurrentDupedObj != null)
                         {
-                            CurrentDupedObj.transform.SetParent(NewDupe.transform);
+                            NewDupe.transform.SetParent(CurrentDupedObj.transform);
                             Debug.Log($"[ForEach] Set Object {NewDupe.name} Inside {CurrentDupedObj.name}! - [D]: Path: {PathToCreate}");
-                        }
-                        else
-                        {
-                            entry.Item2.transform.SetParent(NewDupe.transform);
-                            Debug.Log($"[ForEach] Set {entry.Item2.transform.name} Inside {NewDupe.name}! - [D]: Path: {PathToCreate}");
                         }
 
                         CurrentDupedObj = NewDupe;
@@ -130,8 +164,11 @@ public class FBXUpdater : MonoBehaviour
 
                     if (CurrentDupedObj != null)
                     {
-                        CurrentDupedObj.transform.SetParent(UpdatingTo.transform);
-                        Debug.Log($"Set Path Inside Root! - New Path: {CurrentDupedObj.transform.parent}/{CurrentDupedObj.transform.name}");
+                        entry.Item2.transform.SetParent(CurrentDupedObj.transform);
+                        Debug.Log($"[ForEach] Set {entry.Item2.transform.name} Inside {CurrentDupedObj.name}! - [D]: Path: {PathToCreate}");
+
+                        CurrentDupedObj.transform.root.SetParent(UpdatingTo.transform);
+                        Debug.Log($"Set Path Inside Root!");
                     }
 
                     Debug.LogWarning($"Created Path As It Never Existed!");
@@ -142,6 +179,8 @@ public class FBXUpdater : MonoBehaviour
                     entry.Item2.transform.SetParent(FindOrNull(UpdatingTo.transform, PathToCreate));
                 }
             }
+
+            entry.Item2.sharedMaterials = CopyMaterials(entry.Old.sharedMaterials, entry.Item2.sharedMaterials);
         }
 
         Debug.Log($"Finished Updating {skinnedMeshRenderersOld.Count} SkinnedMeshRenderers' Materials!");
@@ -160,31 +199,7 @@ public class FBXUpdater : MonoBehaviour
             var OldRenderer = entry.Old.GetComponent<MeshRenderer>();
             var NewRenderer = entry.Item2.GetComponent<MeshRenderer>();
 
-            if ((NewRenderer.sharedMaterials.Length == 1 && OldRenderer.sharedMaterials.Length == 1) || (NewRenderer.sharedMaterials.Length == 1 && OldRenderer.sharedMaterials.Length == 2 && OldRenderer.sharedMaterials.GroupBy(x => x.name).All(g => g.Count() == 1))) // No Changes
-            {
-                //Debug.Log($"Updating Single Material: {NewRenderer.sharedMaterial.name.Replace(" (Instance)", "")} On Mesh Object: {entry.Item2.name} To: {OldRenderer.sharedMaterial.name.Replace(" (Instance)", "")}!");
-
-                NewRenderer.sharedMaterial = OldRenderer.sharedMaterial;
-            }
-            else
-            {
-                var MatchingMaterialsOnEntry = OldRenderer.sharedMaterials.Select(Old => (Old, NewRenderer.sharedMaterials.FirstOrDefault(p => p.name.Replace(" (Instance)", "") == Old.name.Replace(" (Instance)", "")))).Where(o => o.Old != null && o.Item2 != null).ToList();
-
-                var NewMats = new List<Material>(NewRenderer.sharedMaterials);
-
-                for (var i = 0; i < MatchingMaterialsOnEntry.Count; i++)
-                {
-                    var matching = MatchingMaterialsOnEntry[i];
-
-                    //Debug.Log($"Updating Material: {matching.Item2.name.Replace(" (Instance)", "")} On Mesh Object: {entry.Item2.name} To: {matching.Old.name.Replace(" (Instance)", "")}!");
-
-                    var Index = NewMats.IndexOf(NewMats.First(o => o.name.Replace(" (Instance)", "") == matching.Old.name.Replace(" (Instance)", "")));
-
-                    NewMats[Index] = matching.Old;
-                }
-
-                NewRenderer.sharedMaterials = NewMats.ToArray();
-            }
+            NewRenderer.sharedMaterials = CopyMaterials(OldRenderer.sharedMaterials, NewRenderer.sharedMaterials);
         }
 
         Debug.Log($"Finished Updating {meshRenderersOld.Count} MeshRenderers' Materials!");
@@ -207,56 +222,97 @@ public class FBXUpdater : MonoBehaviour
 
         #endregion
 
-        #region Move DynamicBones To New
+        //var AllNonMatchingObjects = AllOldTransforms.Where(u => u?.parent != null && u?.parent?.name != "Armature" && u?.name != "Armature" && u.parent != u.root && AllNewTransforms.Where(o => o?.parent != null && o?.parent?.name != "Armature" && o?.name != "Armature" && o.parent != o.root).All(o => (o.parent.name.Replace(".", "_") + "/" + o.name.Replace(".", "_")) != (u.parent.name.Replace(".", "_") + "/" + u.name.Replace(".", "_")))).OrderBy(i => i.GetParentCount());
 
-        var OldDynBones = ToComponentList<DynamicBone>(AllComponentsOld).Where(o => o?.m_Root != null).Select(DynBone => (DynBone, DynBone.transform.parent?.name + "/" + DynBone.gameObject.name, DynBone.m_Root.parent?.name + "/" + DynBone.m_Root.name));
+        //var PrevCopied = new List<GameObject>();
 
-        foreach (var dynBone in OldDynBones)
-        {
-            var BoneToAddTo = AllNewTransforms.FirstOrDefault(o => (o.parent?.name + "/" + o.name) == dynBone.Item2);
-            var RootBone = AllNewTransforms.FirstOrDefault(o => (o.parent?.name + "/" + o.name) == dynBone.Item3);
+        //foreach (var entry in AllNonMatchingObjects)
+        //{
+        //    if (PrevCopied.Any(o => o.transform.IsChildOf(o.transform)))
+        //    {
+        //        continue;
+        //    }
 
-            if (BoneToAddTo == null || RootBone == null)
-            {
-                continue;
-            }
+        //    var path = GetPath(entry.parent, true);
 
-            var Bone = BoneToAddTo.gameObject.AddComponent<DynamicBone>();
-            EditorUtility.CopySerialized(dynBone.DynBone, Bone);
-            Bone.m_Root = RootBone;
-        }
+        //    var ToPath = path.Replace(".", "_");
 
-        #endregion
+        //    Debug.Log($"ToPath: {ToPath}");
 
-        #region Move DynamicBoneColliders To New
+        //    if (string.IsNullOrEmpty(ToPath))
+        //    {
+        //        Debug.LogError("Empty Path!");
+        //        continue;
+        //    }
 
-        var OldDynBoneColliders = ToComponentList<DynamicBoneCollider>(AllComponentsOld).Where(o => o != null).Select(DynBoneCol => (DynBoneCol, DynBoneCol.transform.parent?.name + "/" + DynBoneCol.gameObject.name));
+        //    var ToPathObj = UpdatingTo.transform.Find(ToPath);
 
-        foreach (var dynBonecol in OldDynBoneColliders)
-        {
-            var BoneToAddTo = AllNewTransforms.FirstOrDefault(o => (o.parent?.name + "/" + o.name) == dynBonecol.Item2);
+        //    if (ToPathObj == null)
+        //    {
+        //        Debug.LogError("ToPathObj == null!");
+        //        continue;
+        //    }
 
-            if (BoneToAddTo == null)
-            {
-                continue;
-            }
+        //    var copy = Object.Instantiate(entry.gameObject);
 
-            var Col = BoneToAddTo.gameObject.AddComponent<DynamicBoneCollider>();
-            EditorUtility.CopySerialized(dynBonecol.DynBoneCol, Col);
-        }
+        //    copy.transform.SetParent(ToPathObj);
 
-        #endregion
+        //    PrevCopied.Add(entry.gameObject);
+        //}
 
-        #region Organize Transforms
+        #region Organize Transforms And Match Scales
 
         var AllMatchingObjects = AllOldTransforms.Where(i => i != null && i.parent != null).Select(Old => (Old, AllNewTransforms.Where(u => u.parent != null).FirstOrDefault(o => (Old.parent.name + "/" + Old.name) == (o.parent.name + "/" + o.name)))).Where(p => p.Item2 != null);
 
         foreach (var entry in AllMatchingObjects)
         {
             entry.Item2.SetSiblingIndex(entry.Old.GetSiblingIndex());
+
+            entry.Item2.localScale = entry.Old.localScale;
         }
 
+        UpdatingTo.transform.localScale = transform.localScale;
+
         #endregion
+    }
+
+    private Material[] CopyMaterials(Material[] From, Material[] To)
+    {
+        if (To == null && From != null)
+        {
+            To = From;
+            return To;
+        }
+
+        if (From == null)
+        {
+            return To;
+        }
+
+        if (From.Length == To.Length)
+        {
+            To = From;
+        }
+        else
+        {
+            var MatchingMaterialsOnEntry = From.Where(z => z != null).Select(Old => (Old, To.FirstOrDefault(p =>  p?.name != null && (p.name.Replace(" (Instance)", "").Contains(Old.name.Replace(" (Instance)", "")) || (p.mainTexture != null && Old.mainTexture != null && p.mainTexture.name.Replace(" (Instance)", "").Contains(Old.mainTexture.name.Replace(" (Instance)", ""))))))).Where(o => o.Old != null && o.Item2 != null).ToList();
+
+            for (var i = 0; i < MatchingMaterialsOnEntry.Count; i++)
+            {
+                var matching = MatchingMaterialsOnEntry[i];
+
+                //Debug.Log($"Updating Material: {matching.Item2.name.Replace(" (Instance)", "")} On Mesh Object: {entry.Item2.name} To: {matching.Old.name.Replace(" (Instance)", "")}!");
+
+                if (matching.Item2 != null)
+                {
+                    var IndexToUpdate = To.ToList().FindIndex(o => o.name == matching.Item2.name);
+
+                    To[IndexToUpdate] = matching.Old;
+                }
+            }
+        }
+
+        return To;
     }
 
     public static Transform FindOrNull(Transform transform, string path)
@@ -302,18 +358,6 @@ public class FBXUpdater : MonoBehaviour
         return null;
     }
 
-    public static string GetPathToObject(Transform obj)
-    {
-        var Path = obj.name;
-
-        if (obj.transform.parent != null)
-        {
-            Path = GetPathToObject(obj.transform.parent) + "/" + Path;
-        }
-
-        return Path;
-    }
-
     public static List<T> ToComponentList<T>(IEnumerable<Component> list) where T : Component
     {
         return OfILCastedType<T>(list);
@@ -321,16 +365,16 @@ public class FBXUpdater : MonoBehaviour
 
     public static List<T> OfILCastedType<T>(IEnumerable<Component> source) where T : Component
     {
-        return source == null ? null : OfTypeIterator<T>(source).ToList();
+        return OfTypeIterator<T>(source).ToList();
     }
 
     private static IEnumerable<T> OfTypeIterator<T>(IEnumerable<Component> source) where T : Component
     {
         foreach (var obj in source)
         {
-            if (obj != null && obj is T && obj is var result)
+            if (obj != null && obj is T result)
             {
-                yield return result as T;
+                yield return result;
             }
         }
     }
